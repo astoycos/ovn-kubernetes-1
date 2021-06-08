@@ -3,6 +3,7 @@
 package cni
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 
+	"k8s.io/client-go/kubernetes"
+	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
@@ -275,29 +278,11 @@ func setupSriovInterface(netns ns.NetNS, containerID, ifName string, ifInfo *Pod
 	return hostIface, contIface, nil
 }
 
-// ConfigureInterface sets up the container interface
-func (pr *PodRequest) ConfigureInterface(namespace string, podName string, ifInfo *PodInterfaceInfo) ([]*current.Interface, error) {
-	netns, err := ns.GetNS(pr.Netns)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open netns %q: %v", pr.Netns, err)
-	}
-	defer netns.Close()
-
-	var hostIface, contIface *current.Interface
-
-	klog.V(5).Infof("CNI Conf %v", pr.CNIConf)
-	if pr.CNIConf.DeviceID != "" {
-		// SR-IOV Case
-		hostIface, contIface, err = setupSriovInterface(netns, pr.SandboxID, pr.IfName, ifInfo, pr.CNIConf.DeviceID)
-
-	} else {
-		// General case
-		hostIface, contIface, err = setupInterface(netns, pr.SandboxID, pr.IfName, ifInfo)
-	}
-	if err != nil {
-		return nil, err
-	}
-
+// ConfigureOVS performs OVS configurations in order to set up Pod networking
+func ConfigureOVS(ctx context.Context, namespace, podName, hostIfaceName string,
+	ifInfo *PodInterfaceInfo, sandboxID string, podLister corev1listers.PodLister,
+	kclient kubernetes.Interface, initialPodUID string) error {
+	klog.Infof("ConfigureOVS: namespace: %s, podName: %s", namespace, podName)
 	ifaceID := fmt.Sprintf("%s_%s", namespace, podName)
 
 	// Find and remove any existing OVS port with this iface-id. Pods can
@@ -343,7 +328,57 @@ func (pr *PodRequest) ConfigureInterface(namespace string, podName string, ifInf
 			return nil, fmt.Errorf("failed to set host veth txqlen: %v", err)
 		}
 
-		if err := setPodBandwidth(pr.SandboxID, hostIface.Name, ifInfo.Ingress, ifInfo.Egress); err != nil {
+		if err := setPodBandwidth(sandboxID, hostIfaceName, ifInfo.Ingress, ifInfo.Egress); err != nil {
+			return err
+		}
+	}
+
+	ofPort, err := getIfaceOFPort(hostIfaceName)
+	if err != nil {
+		return err
+	}
+
+	if err = waitForPodInterface(ctx, ifInfo.MAC.String(), ifInfo.IPs, hostIfaceName,
+		ifaceID, ofPort, ifInfo.CheckExtIDs, podLister, kclient, namespace, podName,
+		initialPodUID); err != nil {
+		// Ensure the error shows up in node logs, rather than just
+		// being reported back to the runtime.
+		klog.Warningf("[%s/%s %s] pod uid %s: %v", namespace, podName, sandboxID, initialPodUID, err)
+		return err
+	}
+	return nil
+}
+
+// ConfigureInterface sets up the container interface
+func (pr *PodRequest) ConfigureInterface(ifInfo *PodInterfaceInfo) ([]*current.Interface, error) {
+	netns, err := ns.GetNS(pr.Netns)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open netns %q: %v", pr.Netns, err)
+	}
+	defer netns.Close()
+
+	var hostIface, contIface *current.Interface
+
+	klog.V(5).Infof("CNI Conf %v", pr.CNIConf)
+	if pr.CNIConf.DeviceID != "" {
+		// SR-IOV Case
+		hostIface, contIface, err = setupSriovInterface(netns, pr.SandboxID, pr.IfName, ifInfo, pr.CNIConf.DeviceID)
+	} else {
+		if pr.IsSmartNIC {
+			return nil, fmt.Errorf("unexpected configuration, pod request on smart-nic host. " +
+				"device ID must be provided")
+		}
+		// General case
+		hostIface, contIface, err = setupInterface(netns, pr.SandboxID, pr.IfName, ifInfo)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if !ifInfo.IsSmartNic {
+		err = ConfigureOVS(pr.ctx, pr.PodNamespace, pr.PodName, hostIface.Name, ifInfo, pr.SandboxID,
+			pr.podLister, pr.kclient, pr.PodUID)
+		if err != nil {
 			return nil, err
 		}
 	}

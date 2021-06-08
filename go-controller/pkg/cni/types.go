@@ -3,12 +3,12 @@ package cni
 import (
 	"context"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/containernetworking/cni/pkg/types/current"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/cni/types"
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
+	"k8s.io/client-go/kubernetes"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 )
 
@@ -72,6 +72,8 @@ type PodRequest struct {
 	PodNamespace string
 	// kubernetes pod name
 	PodName string
+	// kubernetes pod UID
+	PodUID string
 	// kubernetes container ID
 	SandboxID string
 	// kernel network namespace path
@@ -86,6 +88,9 @@ type PodRequest struct {
 	ctx context.Context
 	// cancel should be called to cancel this request
 	cancel context.CancelFunc
+
+	podLister corev1listers.PodLister
+	kclient   kubernetes.Interface
 }
 
 type cniRequestFunc func(request *PodRequest, podLister corev1listers.PodLister) ([]byte, error)
@@ -98,7 +103,6 @@ type Server struct {
 	rundir      string
 	podLister   corev1listers.PodLister
 
-	// runningSandboxAdds is a map of sandbox ID to PodRequest for any CNIAdd operation
-	runningSandboxAddsLock sync.Mutex
-	runningSandboxAdds     map[string]*PodRequest
+	// CNI Server mode
+	mode string
 }
