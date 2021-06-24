@@ -7,6 +7,7 @@ import (
 	"net"
 	"time"
 
+	"k8s.io/client-go/kubernetes"
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
 
@@ -79,7 +80,23 @@ func (pr *PodRequest) String() string {
 	return fmt.Sprintf("[%s/%s %s]", pr.PodNamespace, pr.PodName, pr.SandboxID)
 }
 
-func (pr *PodRequest) cmdAdd(podLister corev1listers.PodLister) ([]byte, error) {
+// checkOrUpdatePodUID validates the given pod UID against the request's existing
+// pod UID. If the existing UID is empty the runtime did not support passing UIDs
+// and the best we can do is use the given UID for the duration of the request.
+// But if the existing UID is valid and does not match the given UID then the
+// sandbox request is for a different pod instance and should be terminated.
+func (pr *PodRequest) checkOrUpdatePodUID(podUID string) error {
+	if pr.PodUID == "" {
+		// Runtime didn't pass UID, use the one we got from the pod object
+		pr.PodUID = podUID
+	} else if podUID != pr.PodUID {
+		// Exit early if the pod was deleted and recreated already
+		return fmt.Errorf("pod deleted before sandbox %v operation began", pr.Command)
+	}
+	return nil
+}
+
+func (pr *PodRequest) cmdAdd(podLister corev1listers.PodLister, useOVSExternalIDs bool, kclient kubernetes.Interface) ([]byte, error) {
 	namespace := pr.PodNamespace
 	podName := pr.PodName
 	if namespace == "" || podName == "" {
@@ -91,7 +108,9 @@ func (pr *PodRequest) cmdAdd(podLister corev1listers.PodLister) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	pr.PodUID = podUID
+	if err := pr.checkOrUpdatePodUID(podUID); err != nil {
+		return nil, err
+	}
 
 	podInterfaceInfo, err := PodAnnotation2PodInfo(annotations)
 	if err != nil {
@@ -135,7 +154,9 @@ func (pr *PodRequest) cmdCheck(podLister corev1listers.PodLister, useOVSExternal
 	if err != nil {
 		return nil, err
 	}
-	pr.PodUID = podUID
+	if err := pr.checkOrUpdatePodUID(podUID); err != nil {
+		return nil, err
+	}
 
 	if pr.CNIConf.PrevResult != nil {
 		result, err := current.NewResultFromResult(pr.CNIConf.PrevResult)
