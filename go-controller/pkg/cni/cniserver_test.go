@@ -47,7 +47,11 @@ func clientDoCNI(t *testing.T, client *http.Client, req *Request) ([]byte, int) 
 
 var expectedResult cnitypes.Result
 
+<<<<<<< HEAD
 func serverHandleCNI(request *PodRequest, podLister corev1listers.PodLister) ([]byte, error) {
+=======
+func serverHandleCNI(request *PodRequest, podLister corev1listers.PodLister, useOVSExternalIDs bool, kclient kubernetes.Interface, kubeAuth *KubeAPIAuth) ([]byte, error) {
+>>>>>>> 2171779d (cni: pass Kube API auth via cnishim response, not CNI config file)
 	if request.Command == CNIAdd {
 		return json.Marshal(&expectedResult)
 	} else if request.Command == CNIDel || request.Command == CNIUpdate || request.Command == CNICheck {

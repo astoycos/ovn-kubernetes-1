@@ -18,6 +18,18 @@ const serverRunDir string = "/var/run/ovn-kubernetes/cni/"
 const serverSocketName string = "ovn-cni-server.sock"
 const serverSocketPath string = serverRunDir + "/" + serverSocketName
 
+// KubeAPIAuth contains information necessary to create a Kube API client
+type KubeAPIAuth struct {
+	// Kubeconfig is the path to a kubeconfig
+	Kubeconfig string `json:"kubeconfig,omitempty"`
+	// KubeAPIServer is the URL of a Kubernetes API server (not required if kubeconfig is given)
+	KubeAPIServer string `json:"kube-api-server,omitempty"`
+	// KubeAPIToken is a Kubernetes API token (not required if kubeconfig is given)
+	KubeAPIToken string `json:"kube-api-token,omitempty"`
+	// KubeCAData is the Base64-ed Kubernetes API CA certificate data (not required if kubeconfig is given)
+	KubeCAData string `json:"kube-ca-data,omitempty"`
+}
+
 // PodInterfaceInfo consists of interface info result from cni server if cni client configure's interface
 type PodInterfaceInfo struct {
 	util.PodAnnotation
@@ -61,6 +73,7 @@ type CNIRequestMetrics struct {
 type Response struct {
 	Result    *current.Result
 	PodIFInfo *PodInterfaceInfo
+	KubeAuth  *KubeAPIAuth
 }
 
 // PodRequest structure built from Request which is passed to the
@@ -88,20 +101,22 @@ type PodRequest struct {
 	ctx context.Context
 	// cancel should be called to cancel this request
 	cancel context.CancelFunc
-
-	podLister corev1listers.PodLister
-	kclient   kubernetes.Interface
+	// Interface to pod is a Smart-NIC interface
+	IsSmartNIC bool
 }
 
-type cniRequestFunc func(request *PodRequest, podLister corev1listers.PodLister) ([]byte, error)
+type cniRequestFunc func(request *PodRequest, podLister corev1listers.PodLister, useOVSExternalIDs bool, kclient kubernetes.Interface, kubeAuth *KubeAPIAuth) ([]byte, error)
 
 // Server object that listens for JSON-marshaled Request objects
 // on a private root-only Unix domain socket.
 type Server struct {
 	http.Server
-	requestFunc cniRequestFunc
-	rundir      string
-	podLister   corev1listers.PodLister
+	requestFunc       cniRequestFunc
+	rundir            string
+	useOVSExternalIDs int32
+	kclient           kubernetes.Interface
+	podLister         corev1listers.PodLister
+	kubeAuth          *KubeAPIAuth
 
 	// CNI Server mode
 	mode string
