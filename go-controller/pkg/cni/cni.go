@@ -122,7 +122,7 @@ func (pr *PodRequest) cmdDel() ([]byte, error) {
 	return []byte{}, nil
 }
 
-func (pr *PodRequest) cmdCheck(podLister corev1listers.PodLister) ([]byte, error) {
+func (pr *PodRequest) cmdCheck(podLister corev1listers.PodLister, useOVSExternalIDs bool, kclient kubernetes.Interface) ([]byte, error) {
 	namespace := pr.PodNamespace
 	podName := pr.PodName
 	if namespace == "" || podName == "" {
@@ -197,7 +197,7 @@ func HandleCNIRequest(request *PodRequest, podLister corev1listers.PodLister) ([
 	case CNIDel:
 		result, err = request.cmdDel()
 	case CNICheck:
-		result, err = request.cmdCheck(podLister)
+		result, err = request.cmdCheck(podLister, useOVSExternalIDs, kclient)
 	default:
 	}
 	klog.Infof("%s %s finished CNI request %+v, result %q, err %v", request, request.Command, request, string(result), err)
