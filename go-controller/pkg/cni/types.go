@@ -34,9 +34,10 @@ type KubeAPIAuth struct {
 type PodInterfaceInfo struct {
 	util.PodAnnotation
 
-	MTU     int   `json:"mtu"`
-	Ingress int64 `json:"ingress"`
-	Egress  int64 `json:"egress"`
+	MTU         int   `json:"mtu"`
+	Ingress     int64 `json:"ingress"`
+	Egress      int64 `json:"egress"`
+	CheckExtIDs bool  `json:"check-external-ids"`
 }
 
 // Explicit type for CNI commands the server handles
@@ -101,8 +102,6 @@ type PodRequest struct {
 	ctx context.Context
 	// cancel should be called to cancel this request
 	cancel context.CancelFunc
-	// Interface to pod is a Smart-NIC interface
-	IsSmartNIC bool
 }
 
 type cniRequestFunc func(request *PodRequest, podLister corev1listers.PodLister, useOVSExternalIDs bool, kclient kubernetes.Interface, kubeAuth *KubeAPIAuth) ([]byte, error)

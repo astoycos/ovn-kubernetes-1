@@ -132,6 +132,17 @@ func isIfaceIDSet(ifaceName, ifaceID string) error {
 	return nil
 }
 
+func isIfaceOvnInstalledSet(ifaceName string) bool {
+	out, err := ovsGet("Interface", ifaceName, "external-ids", "ovn-installed")
+	if err == nil && out == "true" {
+		klog.V(5).Infof("Interface %s has ovn-installed=true", ifaceName)
+		return true
+	}
+
+	klog.V(5).Info("Still waiting for OVS port %s to have ovn-installed=true", ifaceName)
+	return false
+}
+
 // getIfaceOFPort returns the of port number for an interface
 func getIfaceOFPort(ifaceName string) (int, error) {
 	port, err := ovsGet("Interface", ifaceName, "ofport", "")
@@ -146,28 +157,14 @@ func getIfaceOFPort(ifaceName string) (int, error) {
 	return iPort, nil
 }
 
-func doPodFlowsExist(mac string, ifAddrs []*net.IPNet, ofPort int) bool {
-	// Function checks for OpenFlow flows to know the pod is ready
-	// TODO(trozet): in the future use a more stable mechanism provided by OVN:
-	// https://bugzilla.redhat.com/show_bug.cgi?id=1839102
+type openflowQuery struct {
+	match  string
+	tables []int
+}
 
-	// query represents the match criteria, and different OF tables that this query may match on
-	type query struct {
-		match  string
-		tables []int
-	}
-
+func getLegacyFlowQueries(mac string, ifAddrs []*net.IPNet, ofPort int) []openflowQuery {
 	// Query the flows by mac address for in_port_security and OF port
-	queries := []query{
-		{
-			match:  "dl_src=" + mac,
-			tables: []int{9},
-		},
-		{
-			match:  fmt.Sprintf("in_port=%d", ofPort),
-			tables: []int{0},
-		},
-	}
+	queries := getMinimalFlowQueries(mac, ofPort)
 	for _, ifAddr := range ifAddrs {
 		var ipMatch string
 		if !utilnet.IsIPv6(ifAddr.IP) {
@@ -179,9 +176,31 @@ func doPodFlowsExist(mac string, ifAddrs []*net.IPNet, ofPort int) bool {
 		// note we need to support table 48 for 20.06 OVN backwards compatibility. Table 49 is now
 		// where out_port_security lives
 		queries = append(queries,
-			query{fmt.Sprintf("%s=%s", ipMatch, ifAddr.IP), []int{48, 49}},
+			openflowQuery{fmt.Sprintf("%s=%s", ipMatch, ifAddr.IP), []int{48, 49}},
 		)
 	}
+	return queries
+}
+
+func getMinimalFlowQueries(mac string, ofPort int) []openflowQuery {
+	// Query the flows by mac address for in_port_security and OF port
+	queries := []openflowQuery{
+		{
+			match:  "dl_src=" + mac,
+			tables: []int{9},
+		},
+		{
+			match:  fmt.Sprintf("in_port=%d", ofPort),
+			tables: []int{0},
+		},
+	}
+	return queries
+}
+
+func doPodFlowsExist(queries []openflowQuery) bool {
+	// Function checks for OpenFlow flows to know the pod is ready
+	// TODO(trozet): in the future use a more stable mechanism provided by OVN:
+	// https://bugzilla.redhat.com/show_bug.cgi?id=1839102
 
 	// Must find the right flows in all queries to succeed
 	for _, query := range queries {
@@ -271,9 +290,14 @@ func waitForPodInterface(ctx context.Context, mac string, ifAddrs []*net.IPNet,
 			if err := isIfaceIDSet(ifaceName, ifaceID); err != nil {
 				return err
 			}
-			if doPodFlowsExist(mac, ifAddrs, ofPort) {
-				// success
-				return nil
+			if doPodFlowsExist(queries) {
+				if checkExternalIDs {
+					if isIfaceOvnInstalledSet(ifaceName) {
+						return nil
+					}
+				} else {
+					return nil
+				}
 			}
 
 			if err := checkCancelSandbox(mac, podLister, kclient, namespace, name, initialPodUID); err != nil {

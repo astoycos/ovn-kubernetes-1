@@ -1,11 +1,9 @@
 package cni
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net"
-	"time"
 
 	"k8s.io/client-go/kubernetes"
 	corev1listers "k8s.io/client-go/listers/core/v1"
@@ -17,7 +15,6 @@ import (
 	utilnet "k8s.io/utils/net"
 
 	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/config"
-	"github.com/ovn-org/ovn-kubernetes/go-controller/pkg/util"
 )
 
 var (
@@ -103,10 +100,12 @@ func (pr *PodRequest) cmdAdd(kubeAuth *KubeAPIAuth, podLister corev1listers.PodL
 		return nil, fmt.Errorf("required CNI variable missing")
 	}
 
+	annotCondFn := isOvnReady
+
 	// Get the IP address and MAC address of the pod
-	annotations, err := getPodAnnotations(pr.ctx, podLister, pr.PodNamespace, pr.PodName)
+	podUID, annotations, err := GetPodAnnotations(pr.ctx, podLister, kclient, namespace, podName, annotCondFn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get pod annotation: %v", err)
 	}
 	if err := pr.checkOrUpdatePodUID(podUID); err != nil {
 		return nil, err
@@ -150,7 +149,9 @@ func (pr *PodRequest) cmdCheck(podLister corev1listers.PodLister, useOVSExternal
 	}
 
 	// Get the IP address and MAC address of the pod
-	annotations, err := getPodAnnotations(pr.ctx, podLister, pr.PodNamespace, pr.PodName)
+	annotCondFn := isOvnReady
+
+	podUID, annotations, err := GetPodAnnotations(pr.ctx, podLister, kclient, pr.PodNamespace, pr.PodName, annotCondFn)
 	if err != nil {
 		return nil, err
 	}
@@ -270,28 +271,4 @@ func (pr *PodRequest) getCNIResult(podLister corev1listers.PodLister, kclient ku
 		Interfaces: interfacesArray,
 		IPs:        ips,
 	}, nil
-}
-
-// getPodAnnotations obtains the pod annotation from the cache
-func getPodAnnotations(ctx context.Context, podLister corev1listers.PodLister, namespace, name string) (map[string]string, error) {
-	timeout := time.After(30 * time.Second)
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("canceled waiting for annotations")
-		case <-timeout:
-			return nil, fmt.Errorf("timed out waiting for annotations")
-		default:
-			pod, err := podLister.Pods(namespace).Get(name)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get annotations: %v", err)
-			}
-			annotations := pod.ObjectMeta.Annotations
-			if _, ok := annotations[util.OvnPodAnnotationName]; ok {
-				return annotations, nil
-			}
-			// try again later
-			time.Sleep(200 * time.Millisecond)
-		}
-	}
 }

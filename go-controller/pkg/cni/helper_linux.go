@@ -302,30 +302,30 @@ func ConfigureOVS(ctx context.Context, namespace, podName, hostIfaceName string,
 
 	// Add the new sandbox's OVS port
 	ovsArgs := []string{
-		"add-port", "br-int", hostIface.Name, "--", "set",
-		"interface", hostIface.Name,
+		"add-port", "br-int", hostIfaceName, "--", "set",
+		"interface", hostIfaceName,
 		fmt.Sprintf("external_ids:attached_mac=%s", ifInfo.MAC),
 		fmt.Sprintf("external_ids:iface-id=%s", ifaceID),
 		fmt.Sprintf("external_ids:ip_addresses=%s", strings.Join(ipStrs, ",")),
-		fmt.Sprintf("external_ids:sandbox=%s", pr.SandboxID),
+		fmt.Sprintf("external_ids:sandbox=%s", sandboxID),
 	}
 
 	if out, err := ovsExec(ovsArgs...); err != nil {
-		return nil, fmt.Errorf("failure in plugging pod interface: %v\n  %q", err, out)
+		return fmt.Errorf("failure in plugging pod interface: %v\n  %q", err, out)
 	}
 
-	if err := clearPodBandwidth(pr.SandboxID); err != nil {
-		return nil, err
+	if err := clearPodBandwidth(sandboxID); err != nil {
+		return err
 	}
 
 	if ifInfo.Ingress > 0 || ifInfo.Egress > 0 {
-		l, err := netlink.LinkByName(hostIface.Name)
+		l, err := netlink.LinkByName(hostIfaceName)
 		if err != nil {
-			return nil, fmt.Errorf("failed to find host veth interface %s: %v", hostIface.Name, err)
+			return fmt.Errorf("failed to find host veth interface %s: %v", hostIfaceName, err)
 		}
 		err = netlink.LinkSetTxQLen(l, 1000)
 		if err != nil {
-			return nil, fmt.Errorf("failed to set host veth txqlen: %v", err)
+			return fmt.Errorf("failed to set host veth txqlen: %v", err)
 		}
 
 		if err := setPodBandwidth(sandboxID, hostIfaceName, ifInfo.Ingress, ifInfo.Egress); err != nil {
@@ -359,15 +359,11 @@ func (pr *PodRequest) ConfigureInterface(podLister corev1listers.PodLister, kcli
 
 	var hostIface, contIface *current.Interface
 
-	klog.V(5).Infof("CNI Conf %v", pr.CNIConf)
+	klog.Infof("CNI Conf %v", pr.CNIConf)
 	if pr.CNIConf.DeviceID != "" {
 		// SR-IOV Case
 		hostIface, contIface, err = setupSriovInterface(netns, pr.SandboxID, pr.IfName, ifInfo, pr.CNIConf.DeviceID)
 	} else {
-		if pr.IsSmartNIC {
-			return nil, fmt.Errorf("unexpected configuration, pod request on smart-nic host. " +
-				"device ID must be provided")
-		}
 		// General case
 		hostIface, contIface, err = setupInterface(netns, pr.SandboxID, pr.IfName, ifInfo)
 	}
@@ -375,12 +371,11 @@ func (pr *PodRequest) ConfigureInterface(podLister corev1listers.PodLister, kcli
 		return nil, err
 	}
 
-	if !ifInfo.IsSmartNic {
-		err = ConfigureOVS(pr.ctx, pr.PodNamespace, pr.PodName, hostIface.Name, ifInfo, pr.SandboxID,
-			podLister, kclient, pr.PodUID)
-		if err != nil {
-			return nil, err
-		}
+	err = ConfigureOVS(pr.ctx, pr.PodNamespace, pr.PodName, hostIface.Name, ifInfo, pr.SandboxID,
+		podLister, kclient, pr.PodUID)
+	if err != nil {
+		pr.deletePorts()
+		return nil, err
 	}
 
 	// OCP HACK: block access to MCS/metadata; https://github.com/openshift/ovn-kubernetes/pull/19
@@ -412,15 +407,6 @@ func (pr *PodRequest) ConfigureInterface(podLister corev1listers.PodLister, kcli
 	})
 	if err != nil {
 		klog.Warningf("Failed to settle addresses: %q", err)
-	}
-
-	ofPort, err := getIfaceOFPort(hostIface.Name)
-	if err != nil {
-		return nil, err
-	}
-
-	if err = waitForPodFlows(pr.ctx, ifInfo.MAC.String(), ifInfo.IPs, hostIface.Name, ifaceID, ofPort); err != nil {
-		return nil, fmt.Errorf("error while waiting on flows for pod: %v", err)
 	}
 
 	return []*current.Interface{hostIface, contIface}, nil
@@ -469,4 +455,14 @@ func (pr *PodRequest) PlatformSpecificCleanup() error {
 	pr.deletePodConntrack()
 
 	return nil
+}
+
+func (pr *PodRequest) deletePorts() {
+	ifaceName := pr.SandboxID[:15]
+	out, err := ovsExec("del-port", "br-int", ifaceName)
+	_ = util.LinkDelete(ifaceName)
+	if err != nil && !strings.Contains(out, "no port named") {
+		// DEL should be idempotent; don't return an error just log it
+		klog.Warningf("Failed to delete OVS port %s: %v\n  %q", ifaceName, err, string(out))
+	}
 }

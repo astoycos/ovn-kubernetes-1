@@ -47,11 +47,17 @@ import (
 // started.
 
 // NewCNIServer creates and returns a new Server object which will listen on a socket in the given path
-func NewCNIServer(rundir string, factory factory.NodeWatchFactory) *Server {
+func NewCNIServer(rundir string, useOVSExternalIDs bool, factory factory.NodeWatchFactory, kclient kubernetes.Interface) (*Server, error) {
 	if len(rundir) == 0 {
 		rundir = serverRunDir
 	}
 	router := mux.NewRouter()
+
+	// we use atomic lib to store port binding mode state, so use int32 to represent bool
+	var ovnPortBinding int32
+	if useOVSExternalIDs {
+		ovnPortBinding = 1
+	}
 
 	s := &Server{
 		Server: http.Server{
@@ -61,7 +67,6 @@ func NewCNIServer(rundir string, factory factory.NodeWatchFactory) *Server {
 		useOVSExternalIDs: ovnPortBinding,
 		podLister:         corev1listers.NewPodLister(factory.LocalPodInformer().GetIndexer()),
 		kclient:           kclient,
-		mode:              config.OvnKubeNode.Mode,
 		kubeAuth: &KubeAPIAuth{
 			Kubeconfig:    config.Kubernetes.Kubeconfig,
 			KubeAPIServer: config.Kubernetes.APIServer,
